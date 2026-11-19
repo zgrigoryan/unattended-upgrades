@@ -102,6 +102,8 @@ USERS = "/usr/bin/users"
 APPLY_ON_SHUTDOWN_FILE = "/var/run/unattended-upgrades-apply-on-shutdown"
 # Suffix used by unattended-upgrade-deferred-control for a skipped marker.
 SKIPPED_SUFFIX = ".skipped"
+# Deferred roots, kept across reboots so the marker can be re-created.
+DEFERRED_RECORD_FILE = "var/lib/unattended-upgrades/deferred"
 
 
 DISTRO_CODENAME: str = ""
@@ -2684,17 +2686,43 @@ def fetch_deferred_archives(cache: UnattendedUpgradesCache,
         cache.clear()
 
 
-def update_apply_on_shutdown_marker(rootdir: str, pending: bool) -> None:
+def write_deferred_record(rootdir: str,
+                          roots: collections.abc.Iterable[apt.Package]) -> None:
+    """Remember deferred roots across reboots (the marker lives in /run).
+
+    One line per root: "<name> <architecture> <version>" of the candidate.
+    The shutdown helper uses it at boot to re-create the marker while the
+    roots are still not installed at those versions.
+    """
+    filename = os.path.join(rootdir, DEFERRED_RECORD_FILE)
+    lines = sorted("%s %s %s\n" % (pkg.shortname, pkg.candidate.architecture,
+                                   pkg.candidate.version)
+                   for pkg in roots if pkg.candidate)
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with open(filename + ".new", "w") as f:
+        f.writelines(lines)
+    os.replace(filename + ".new", filename)
+
+
+def update_apply_on_shutdown_marker(
+        rootdir: str,
+        pending: bool,
+        roots: collections.abc.Iterable[apt.Package] | None = None,
+) -> None:
     filename = os.path.join(rootdir, APPLY_ON_SHUTDOWN_FILE.lstrip("/"))
+    record = os.path.join(rootdir, DEFERRED_RECORD_FILE)
     if pending:
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         with open(filename, "w"):
             pass
+        if roots is not None:
+            write_deferred_record(rootdir, roots)
     else:
-        try:
-            os.unlink(filename)
-        except FileNotFoundError:
-            pass
+        for path in (filename, record):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
     # A fresh decision replaces any earlier skip, so a later "enable" from
     # unattended-upgrade-deferred-control cannot restore stale pending work.
     try:
@@ -2703,17 +2731,44 @@ def update_apply_on_shutdown_marker(rootdir: str, pending: bool) -> None:
         pass
 
 
+def flag_reboot_required(pkgs: list[str]) -> None:
+    """Ask for a reboot so the deferred installation can take place.
+
+    Uses the standard flag files, so the login notice, the summary email
+    and Automatic-Reboot pick it up. Existing entries are kept.
+    """
+    try:
+        if not os.path.exists(REBOOT_REQUIRED_FILE):
+            os.makedirs(os.path.dirname(REBOOT_REQUIRED_FILE), exist_ok=True)
+            with open(REBOOT_REQUIRED_FILE, "w") as f:
+                f.write("*** System restart required ***\n")
+        pkgs_file = REBOOT_REQUIRED_FILE + ".pkgs"
+        listed: set[str] = set()
+        if os.path.exists(pkgs_file):
+            with open(pkgs_file) as f:
+                listed = {line.strip() for line in f}
+        with open(pkgs_file, "a") as f:
+            for name in pkgs:
+                if name not in listed:
+                    f.write(name + "\n")
+    except OSError as error:
+        logging.warning(_("Could not flag that a reboot is required: %s"),
+                        error)
+
+
 def recheck_deferred_upgrades(cache: UnattendedUpgradesCache,
                               options: Options,
                               rootdir: str,
-                              retained_packages: set[str]) -> set[str]:
+                              retained_packages: set[str],
+                              use_marker: bool = True) -> set[str]:
     # Minimal-step installation can succeed while some transactions remain.
     remaining = calculate_upgradable_pkgs(cache, options)
     mark_pkgs_to_upgrade(cache, [pkg.name for pkg in remaining])
     if not should_stop():
         retained_packages = {pkg.shortname for pkg in cache.get_changes()
                              if pkg.marked_install or pkg.marked_upgrade}
-        update_apply_on_shutdown_marker(rootdir, bool(remaining))
+        update_apply_on_shutdown_marker(
+            rootdir, use_marker and bool(remaining), remaining)
     cache.clear()
     return retained_packages
 
@@ -3162,13 +3217,17 @@ def run(options: Options,
 
     # do not touch the marker when the run is stopped, the result is unknown
     if not options.dry_run and not should_stop():
-        pending = bool(pkgs_to_upgrade if on_shutdown else retained_packages)
+        roots = pkgs_to_upgrade if on_shutdown else deferred
+        # With InstallOnShutdown the shutdown run starts because of the
+        # option, so the marker (and a desktop skip of it) does not apply.
+        pending = bool(roots) and not shutdown_configured
         # A conffile conflict is not evidence that pending work is finished.
         if pending or not pkg_conffile_prompt:
-            update_apply_on_shutdown_marker(rootdir, pending)
+            update_apply_on_shutdown_marker(rootdir, pending, roots)
     if pkgs_deferred:
         logging.warning(_("Packages that will be installed at the next "
                           "shutdown or reboot: %s"), " ".join(pkgs_deferred))
+        flag_reboot_required(pkgs_deferred)
 
     # auto-removals
     kernel_pkgs_remove_success: bool = True
@@ -3333,7 +3392,8 @@ def run(options: Options,
     if (on_shutdown and successful_run and not options.dry_run
             and not should_stop()):
         retained_packages = recheck_deferred_upgrades(
-            cache, options, rootdir, retained_packages)
+            cache, options, rootdir, retained_packages,
+            use_marker=not shutdown_configured)
 
     # clean after success install (if needed)
     keep_key = "Unattended-Upgrade::Keep-Debs-After-Install"

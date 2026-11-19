@@ -183,9 +183,15 @@ class TestDeferredInstallFlow(TestBase):
             f.write("deb [trusted=yes] copy:%s lucid-security main\n" % self.repo)
         self.installed = []
         self.modes = []
+        # Keep the reboot flag inside the test root, never the real one.
+        self.reboot_required = os.path.join(self.rootdir, "var/run/reboot-required")
+        self.record = os.path.join(
+            self.rootdir, unattended_upgrade.DEFERRED_RECORD_FILE)
         for target, kwargs in (
                 ("unattended_upgrade.should_stop", {"return_value": False}),
                 ("unattended_upgrade.is_update_day", {"return_value": True}),
+                ("unattended_upgrade.REBOOT_REQUIRED_FILE",
+                 {"new": self.reboot_required}),
                 ("apt.Cache.install_archives",
                  {"autospec": True, "side_effect": self.install_archives})):
             patcher = patch(target, **kwargs)
@@ -277,6 +283,24 @@ class TestDeferredInstallFlow(TestBase):
         self.assertEqual(set(self.modes),
                          {unattended_upgrade.UpgradeFilter.DEFERRED_ONLY})
         self.assertFalse(os.path.exists(self.marker))
+        # Completed work also drops the record used to restore the marker.
+        self.assertFalse(os.path.exists(self.record))
+
+    def test_deferring_records_roots_and_requests_reboot(self):
+        os.makedirs(os.path.dirname(self.reboot_required), exist_ok=True)
+        with open(self.reboot_required + ".pkgs", "w") as f:
+            f.write("linux-base\n")
+        self.assertTrue(self.run_upgrade().success)
+        with open(self.record) as f:
+            self.assertEqual(f.read(), "deferred-root all 2.0\n"
+                                       "ordinary-root all 2.0\n")
+        with open(self.reboot_required) as f:
+            self.assertIn("System restart required", f.read())
+        # Existing entries are kept and names are not repeated.
+        self.assertTrue(self.run_upgrade().success)
+        with open(self.reboot_required + ".pkgs") as f:
+            self.assertEqual(f.read().split(),
+                             ["linux-base", "deferred-root", "ordinary-root"])
 
     def test_deferred_only_early_return(self):
         apt_pkg.config.set("Unattended-Upgrade::Package-Blacklist::",
@@ -296,7 +320,11 @@ class TestDeferredInstallFlow(TestBase):
         self.assertTrue(self.run_upgrade().success)
         self.assertEqual(self.installed, [])
         self.assertEqual(len(self.cached_packages()), 5)
-        self.assertTrue(os.path.exists(self.marker))
+        # The option itself starts the shutdown run, so no marker, record or
+        # reboot flag is created (a desktop skip would have no effect).
+        self.assertFalse(os.path.exists(self.marker))
+        self.assertFalse(os.path.exists(self.record))
+        self.assertFalse(os.path.exists(self.reboot_required))
         self.assertTrue(self.run_upgrade(
             shutdown=True, minimal_upgrade_steps=False).success)
         self.assertEqual(len(self.installed), 5)
@@ -382,6 +410,7 @@ class TestDeferredInstallFlow(TestBase):
                     apt_pkg.config.set("Unattended-Upgrade::" + key, value)
                 result = self.run_upgrade(**options)
                 self.assertEqual(result.pkgs_deferred, [])
+                self.assertFalse(os.path.exists(self.reboot_required))
                 # setUp resets these for the next test; reset between cases.
                 apt_pkg.config.clear("Unattended-Upgrade::Package-Blacklist")
                 apt_pkg.config.set("Unattended-Upgrade::InstallOnShutdown",

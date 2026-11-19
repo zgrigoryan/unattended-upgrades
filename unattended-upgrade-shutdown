@@ -50,6 +50,8 @@ from threading import Event
 
 APPLY_ON_SHUTDOWN_FILE = "/var/run/unattended-upgrades-apply-on-shutdown"
 PROGRESS_FILE = "/var/run/unattended-upgrades.progress"
+# Written by unattended-upgrade: deferred roots as "<name> <arch> <version>".
+DEFERRED_RECORD_FILE = "/var/lib/unattended-upgrades/deferred"
 
 try:
     import apt_pkg
@@ -149,6 +151,48 @@ def exit_log_result(success: bool, deferred_only: bool = False) -> None:
             log_msg(_("Unattended-upgrades stopped. There may be upgrades"
                       " left to be installed in the next run."), logging.INFO)
         sys.exit(1)
+
+
+def restore_apply_on_shutdown_marker(rootdir: str = "/",
+                                     status_file: str | None = None) -> bool:
+    """Re-create the marker at boot while recorded deferred work is pending.
+
+    The marker lives in /run and is lost at every reboot. The last regular
+    run recorded the deferred roots; if any of them is still not installed
+    at (at least) the recorded version, the marker is put back so the
+    updates are offered and installed at the next shutdown. A record whose
+    roots are all installed is stale and removed. Returns True if the
+    marker was restored.
+    """
+    marker = os.path.join(rootdir, APPLY_ON_SHUTDOWN_FILE.lstrip("/"))
+    record = os.path.join(rootdir, DEFERRED_RECORD_FILE.lstrip("/"))
+    if os.path.exists(marker) or not os.path.exists(record):
+        return False
+    with open(record) as f:
+        wanted = [line.split() for line in f]
+    wanted = [entry for entry in wanted if len(entry) == 3]
+    if status_file is None:
+        status_file = apt_pkg.config.find_file("Dir::State::status")
+    installed: dict[tuple[str, str], str] = {}
+    with open(status_file) as f:
+        for section in apt_pkg.TagFile(f):
+            if section.get("Status", "").endswith(" installed"):
+                installed[(section.get("Package", ""),
+                           section.get("Architecture", ""))] = \
+                    section.get("Version", "")
+    pending = [name for name, arch, version in wanted
+               if (name, arch) not in installed
+               or apt_pkg.version_compare(installed[(name, arch)],
+                                          version) < 0]
+    if not pending:
+        os.unlink(record)
+        return False
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w"):
+        pass
+    logging.info("Deferred updates are still pending, they will be "
+                 "installed at the next shutdown: %s", " ".join(pending))
+    return True
 
 
 class UnattendedUpgradesShutdown():
@@ -476,6 +520,15 @@ def main():
     logging.basicConfig(filename=logfile,
                         level=level,
                         format="%(asctime)s %(levelname)s - %(message)s")
+
+    if options.wait_for_signal:
+        # Started at boot: bring back deferred work the reboot cleared from
+        # /run. This must never prevent the helper from running.
+        try:
+            apt_pkg.init_system()
+            restore_apply_on_shutdown_marker()
+        except Exception:
+            logging.exception("Could not restore pending deferred updates")
 
     UnattendedUpgradesShutdown(options).run()
 

@@ -312,6 +312,15 @@ Supported Options Reference
  marker is cleared at reboot. With `InstallOnShutdown` enabled, the shutdown
  installation runs regardless of a skip.
 
+ The deferred packages are also recorded in
+ `/var/lib/unattended-upgrades/deferred`, so the marker is re-created at boot
+ while they are still not installed. A run that defers packages also creates
+ `/var/run/reboot-required` (and lists them in `/var/run/reboot-required.pkgs`),
+ so the usual restart notice, the summary email and
+ `Unattended-Upgrade::Automatic-Reboot` apply. With `InstallOnShutdown`
+ enabled, no marker, record or reboot flag is created: the option itself
+ starts the shutdown installation.
+
 * `Unattended-Upgrade::MinBatteryLevel` - percentage or "ac-only" (default:"40")
  
  The average charge of the batteries, in percent, needed to upgrade
