@@ -356,6 +356,37 @@ class TestDeferredInstallFlow(TestBase):
         self.assertFalse(os.path.exists(self.marker))
         self.assertEqual(self.installed, [])
 
+    def test_ordinary_run_reports_deferred_packages(self):
+        with self.assertLogs(level="WARNING") as logs:
+            result = self.run_upgrade()
+        self.assertEqual(result.pkgs_deferred, ["deferred-root", "ordinary-root"])
+        self.assertTrue(any(
+            "installed at the next shutdown or reboot: deferred-root ordinary-root"
+            in line for line in logs.output))
+
+    def test_no_pending_report_without_deferred_work(self):
+        # Nothing deferred, a dry-run, and InstallOnShutdown (which keeps its
+        # existing reporting) must not claim pending deferred updates.
+        cases = (
+            ("nothing deferred", {}, {}),
+            ("dry-run", {}, {"dry_run": True}),
+            ("InstallOnShutdown", {"InstallOnShutdown": "true"}, {}),
+        )
+        for case, config, options in cases:
+            with self.subTest(case=case):
+                if case == "nothing deferred":
+                    for name in ("deferred-root$", "ordinary-root$"):
+                        apt_pkg.config.set(
+                            "Unattended-Upgrade::Package-Blacklist::", name)
+                for key, value in config.items():
+                    apt_pkg.config.set("Unattended-Upgrade::" + key, value)
+                result = self.run_upgrade(**options)
+                self.assertEqual(result.pkgs_deferred, [])
+                # setUp resets these for the next test; reset between cases.
+                apt_pkg.config.clear("Unattended-Upgrade::Package-Blacklist")
+                apt_pkg.config.set("Unattended-Upgrade::InstallOnShutdown",
+                                   "false")
+
     def test_keep_debs_option(self):
         apt_pkg.config.set("Unattended-Upgrade::Keep-Debs-After-Install", "true")
         self.assertTrue(self.run_upgrade().success)

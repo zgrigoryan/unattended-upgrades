@@ -192,6 +192,17 @@ Debian-Security']
             " Debian wheezy-security:\n  linux-image"
             in mail_txt)
 
+    def test_summary_mail_lists_deferred_packages(self):
+        for deferred, listed in ((["deferred-package"], True), ([], False)):
+            with self.subTest(deferred=deferred):
+                send_summary_mail(*self._return_mock_data(),
+                                  pkgs_deferred=deferred)
+                with open(os.path.join(self.tempdir, "mail.txt"), "rb") as fp:
+                    mail_txt = fp.read().decode("utf-8")
+                self.assertEqual(
+                    "Packages that will be installed at the next shutdown "
+                    "or reboot:\n deferred-package" in mail_txt, listed)
+
     def test_summary_mail_blacklisted_only(self):
         # Test that when only blacklisted packages are available, they
         # are still mentioned in the mail message.
