@@ -303,6 +303,15 @@ Supported Options Reference
  installed, and the final message reports whether they were installed or remain
  pending. Messages are also recorded in `unattended-upgrades-shutdown.log`.
 
+ A desktop session can let the user skip the deferred installation for the
+ current shutdown with
+ `pkexec /usr/share/unattended-upgrades/unattended-upgrade-deferred-control skip`,
+ and undo that with `... enable` (for example when the shutdown request fails).
+ Skipping requires administrator authentication; re-enabling does not. A later
+ regular run recreates the marker if deferred work is still pending, and the
+ marker is cleared at reboot. With `InstallOnShutdown` enabled, the shutdown
+ installation runs regardless of a skip.
+
 * `Unattended-Upgrade::MinBatteryLevel` - percentage or "ac-only" (default:"40")
  
  The average charge of the batteries, in percent, needed to upgrade

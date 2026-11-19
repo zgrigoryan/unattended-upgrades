@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+# Copyright (c) 2026 Canonical Ltd
+#
+# unattended-upgrade-deferred-control - let a desktop session skip, or
+# re-enable, the installation of deferred updates at the next shutdown
+#
+# This file is part of unattended-upgrades
+#
+# unattended-upgrades is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 2 of the License, or (at
+# your option) any later version.
+#
+# unattended-upgrades is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with unattended-upgrades; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+# Usage (normally through pkexec, see the polkit policy):
+#   unattended-upgrade-deferred-control skip
+#   unattended-upgrade-deferred-control enable
+#
+# skip removes the apply-on-shutdown marker, so the shutdown helper does not
+# install the deferred updates during the current shutdown. enable puts a
+# skipped marker back. Neither command touches ordinary unattended-upgrades
+# runs, and both are idempotent. A later ordinary run recreates the marker
+# if deferred work is still pending, and /run is cleared at reboot.
+
+import gettext
+import os
+import sys
+from gettext import gettext as _
+
+APPLY_ON_SHUTDOWN_FILE = "/var/run/unattended-upgrades-apply-on-shutdown"
+# Where a skipped marker is kept so that enable can restore exactly it.
+SKIPPED_FILE = APPLY_ON_SHUTDOWN_FILE + ".skipped"
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+
+
+def _path(rootdir: str, filename: str) -> str:
+    return os.path.join(rootdir, filename.lstrip("/"))
+
+
+def skip(rootdir: str = "/") -> None:
+    """Skip installing deferred updates at the next shutdown."""
+    try:
+        os.replace(_path(rootdir, APPLY_ON_SHUTDOWN_FILE),
+                   _path(rootdir, SKIPPED_FILE))
+    except FileNotFoundError:
+        # Nothing is pending, so there is nothing to skip.
+        pass
+
+
+def enable(rootdir: str = "/") -> None:
+    """Re-enable installing deferred updates that were skipped."""
+    try:
+        os.replace(_path(rootdir, SKIPPED_FILE),
+                   _path(rootdir, APPLY_ON_SHUTDOWN_FILE))
+    except FileNotFoundError:
+        # Nothing was skipped; do not invent pending work.
+        pass
+
+
+COMMANDS = {
+    "skip": skip,
+    "enable": enable,
+}
+
+
+def main(argv: list[str], rootdir: str = "/") -> int:
+    if len(argv) != 2 or argv[1] not in COMMANDS:
+        sys.stderr.write(_("Usage: %s skip|enable\n") % os.path.basename(
+            argv[0] if argv else "unattended-upgrade-deferred-control"))
+        return EXIT_USAGE
+    if os.geteuid() != 0:
+        sys.stderr.write(_("This command must be run as root, "
+                           "for example through pkexec.\n"))
+        return EXIT_ERROR
+    try:
+        COMMANDS[argv[1]](rootdir)
+    except OSError as error:
+        sys.stderr.write(_("Could not %(command)s deferred updates: "
+                           "%(error)s\n") % {"command": argv[1],
+                                             "error": error})
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    gettext.bindtextdomain("unattended-upgrades", "/usr/share/locale")
+    gettext.textdomain("unattended-upgrades")
+    sys.exit(main(sys.argv))
