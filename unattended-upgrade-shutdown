@@ -49,6 +49,7 @@ from gettext import gettext as _
 from threading import Event
 
 APPLY_ON_SHUTDOWN_FILE = "/var/run/unattended-upgrades-apply-on-shutdown"
+PROGRESS_FILE = "/var/run/unattended-upgrades.progress"
 
 try:
     import apt_pkg
@@ -73,22 +74,48 @@ def do_plymouth(msg: str) -> None:
             subprocess.call(["/bin/plymouth", "message", "--text", line])
 
 
+def do_console(msg: str) -> None:
+    fd = os.open("/dev/console", os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    try:
+        os.write(fd, (msg + "\n").encode("utf-8", errors="replace"))
+    finally:
+        os.close(fd)
+
+
 def log_msg(msg: str, level: int = logging.WARN) -> None:
     """ helper that will print msg to usplash, plymouth, console """
     logging.log(level, msg)
-    do_plymouth(msg)
-    do_usplash(msg)
+    for display in (do_console, do_plymouth, do_usplash):
+        try:
+            display(msg)
+        except OSError as error:
+            logging.debug("Could not display shutdown message: %s", error)
 
 
-def log_progress() -> None:
+def deferred_start_message() -> str:
+    return _("Applying deferred updates during shutdown. "
+             "Please do not turn off the computer.")
+
+
+def log_progress(deferred_only: bool = False, started: float = 0) -> None:
     """ helper to log the install progress (if any) """
-    # wait a some seconds and try again
-    msg = _("Unattended-upgrade in progress during shutdown, "
-            "please don't turn off the computer")
-    # progress info
-    progress = "/var/run/unattended-upgrades.progress"
-    if os.path.exists(progress):
-        msg += "\n" + open(progress).read()
+    progress = ""
+    try:
+        with open(PROGRESS_FILE) as f:
+            # Only show progress written by the current run.
+            if os.fstat(f.fileno()).st_mtime >= started:
+                progress = f.read().strip()
+    except OSError:
+        pass
+    if deferred_only:
+        msg = _("Applying deferred updates during shutdown; shutdown will "
+                "continue when they finish. Please do not turn off the "
+                "computer.")
+    else:
+        msg = _("Unattended-upgrade in progress during shutdown, "
+                "please don't turn off the computer")
+    if progress:
+        msg += "\n" + progress
     # log it
     log_msg(msg)
 
@@ -106,13 +133,21 @@ def signal_stop_unattended_upgrade():
                           "already stopped")
 
 
-def exit_log_result(success):
+def exit_log_result(success: bool, deferred_only: bool = False) -> None:
     if success:
-        log_msg(_("All upgrades installed"), logging.INFO)
+        if deferred_only:
+            log_msg(_("Deferred updates were installed. "
+                      "Continuing shutdown."), logging.INFO)
+        else:
+            log_msg(_("All upgrades installed"), logging.INFO)
         sys.exit(0)
     else:
-        log_msg(_("Unattended-upgrades stopped. There may be upgrades"
-                  " left to be installed in the next run."), logging.INFO)
+        if deferred_only:
+            log_msg(_("Deferred updates were not completed and remain "
+                      "pending. Continuing shutdown."), logging.WARNING)
+        else:
+            log_msg(_("Unattended-upgrades stopped. There may be upgrades"
+                      " left to be installed in the next run."), logging.INFO)
         sys.exit(1)
 
 
@@ -126,6 +161,8 @@ class UnattendedUpgradesShutdown():
         self.shutdown_pending = False
         self.on_shutdown_mode = None
         self.on_shutdown_mode_uu_proc = None
+        self.deferred_only = False
+        self.upgrade_start_time = 0.0
         self.start_time = None
         self.lock_was_taken = False
         self.signal_sent = False
@@ -299,23 +336,47 @@ class UnattendedUpgradesShutdown():
                     "Unattended-Upgrade::InstallOnShutdown", False)
                     or os.path.isfile(APPLY_ON_SHUTDOWN_FILE)))
             if self.on_shutdown_mode:
+                self.deferred_only = not apt_pkg.config.find_b(
+                    "Unattended-Upgrade::InstallOnShutdown", False)
                 env = os.environ.copy()
                 env["UNATTENDED_UPGRADES_FORCE_INSTALL_ON_SHUTDOWN"] = "1"
                 logging.debug("starting unattended-upgrades in shutdown mode")
-                self.on_shutdown_mode_uu_proc = subprocess.Popen(
-                    ["unattended-upgrade"], env=env)
-                log_msg(_("Running unattended-upgrades in shutdown mode"))
+                self.upgrade_start_time = time.time()
+                try:
+                    self.on_shutdown_mode_uu_proc = subprocess.Popen(
+                        ["unattended-upgrade"], env=env)
+                except OSError as error:
+                    # Nothing was started, so nothing must be announced.
+                    logging.error(_("Could not start unattended-upgrade in "
+                                    "shutdown mode: %s"), error)
+                    self.on_shutdown_mode = False
+                    return False
+                # Announce only once the installer process exists.
+                if self.deferred_only:
+                    log_msg(deferred_start_message())
+                else:
+                    log_msg(_("Running unattended-upgrades in shutdown mode"))
                 # run u-u, but switch to stopping when receiving stop signal
                 # because it means shutdown progressed despite holding the lock
 
         if self.on_shutdown_mode:
-            log_progress()
-            if self.on_shutdown_mode_uu_proc.poll() is not None:
+            returncode = self.on_shutdown_mode_uu_proc.poll()
+            if returncode is not None:
                 # unattended-upgrades stopped on its own
-                exit_log_result(True)
+                self.exit_shutdown_result(returncode)
             else:
+                log_progress(self.deferred_only, self.upgrade_start_time)
                 return True
         return False
+
+    def exit_shutdown_result(self, returncode: int) -> None:
+        """Report the shutdown-mode installer's real outcome and exit."""
+        logging.debug("Shutdown upgrade process exited with status %s",
+                      returncode)
+        # Success needs a clean exit and no deferred work left behind.
+        exit_log_result(
+            returncode == 0 and not os.path.isfile(APPLY_ON_SHUTDOWN_FILE),
+            self.deferred_only)
 
     def iter(self):
         if self.start_time is None:
@@ -339,6 +400,17 @@ class UnattendedUpgradesShutdown():
         # exit here if there is no lock
         if res > 0:
             logging.debug("lock not taken")
+            if self.on_shutdown_mode_uu_proc is not None:
+                # Our own shutdown-mode run was asked to stop: report what it
+                # actually did, not merely that a stop signal was sent.
+                try:
+                    returncode = self.on_shutdown_mode_uu_proc.wait(
+                        timeout=self.wait_period)
+                except subprocess.TimeoutExpired:
+                    # The lock is free but the child has not exited yet.
+                    os.close(res)
+                    return True
+                self.exit_shutdown_result(returncode)
             if self.lock_was_taken:
                 exit_log_result(self.signal_sent)
             else:
@@ -347,7 +419,7 @@ class UnattendedUpgradesShutdown():
         signal_stop_unattended_upgrade()
         self.signal_sent = True
         # show log
-        log_progress()
+        log_progress(self.deferred_only, self.upgrade_start_time)
         return True
 
 

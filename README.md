@@ -297,6 +297,12 @@ Supported Options Reference
  archives only; missing or invalid archives leave the work pending. With this
  option enabled, all eligible upgrades are deferred to shutdown.
 
+ When a regular run defers packages, it lists them in the log and in the
+ summary email (when one is sent). During a deferred-only shutdown run, the
+ system console and Plymouth announce that the prepared updates are being
+ installed, and the final message reports whether they were installed or remain
+ pending. Messages are also recorded in `unattended-upgrades-shutdown.log`.
+
 * `Unattended-Upgrade::MinBatteryLevel` - percentage or "ac-only" (default:"40")
  
  The average charge of the batteries, in percent, needed to upgrade

@@ -883,7 +883,8 @@ class UnattendedUpgradesResult:
                  pkgs_kept_back: KeptPkgs = KeptPkgs(set),
                  pkgs_removed: list[str] = [],
                  pkgs_kept_installed: list[str] = [],
-                 update_stamp: bool = False
+                 update_stamp: bool = False,
+                 pkgs_deferred: list[str] | None = None,
                  ) -> None:
         self.success = success
         self.result_str = result_str
@@ -892,6 +893,8 @@ class UnattendedUpgradesResult:
         self.pkgs_removed = pkgs_removed
         self.pkgs_kept_installed = pkgs_kept_installed
         self.update_stamp = update_stamp
+        # Roots whose installation was deferred to the next shutdown.
+        self.pkgs_deferred = pkgs_deferred or []
 
 
 def is_dpkg_journal_dirty() -> bool:
@@ -2020,6 +2023,7 @@ def send_summary_mail(pkgs: list[str],
                       mem_log: StringIO | None,
                       dpkg_log_content: str,
                       rootdir: str = "/",
+                      pkgs_deferred: list[str] | None = None,
                       ) -> None:
     """ send mail (if configured in Unattended-Upgrade::Mail) """
     to_email = apt_pkg.config.find("Unattended-Upgrade::Mail", "")
@@ -2086,6 +2090,11 @@ def send_summary_mail(pkgs: list[str],
     if pkgs_kept_installed:
         body += _("Packages that were kept from being auto-removed:\n")
         body += " " + wrap_indent(" ".join(pkgs_kept_installed))
+        body += "\n\n"
+    if pkgs_deferred:
+        body += _("Packages that will be installed at the next shutdown "
+                  "or reboot:\n")
+        body += " " + wrap_indent(" ".join(pkgs_deferred))
         body += "\n\n"
     if dpkg_log_content:
         body += _("Package installation log:") + "\n"
@@ -2849,7 +2858,8 @@ def main(options: Options, rootdir: str = "/") -> int:
             send_summary_mail(res.pkgs, res.success, res.result_str,
                               res.pkgs_kept_back, res.pkgs_removed,
                               res.pkgs_kept_installed, mem_log,
-                              log_content, rootdir)
+                              log_content, rootdir,
+                              pkgs_deferred=res.pkgs_deferred)
             # report results to any plugin
             plugin_manager.postrun(res, mem_log, log_content)
 
@@ -3084,6 +3094,7 @@ def run(options: Options,
                 cache.clear()
 
     retained_packages: set[str] = set()
+    pkgs_deferred: list[str] = []
     if on_shutdown:
         pkgs_to_upgrade, retained_packages = select_deferred_upgrades(cache, options)
         if greedy and pkgs_to_upgrade:
@@ -3136,6 +3147,10 @@ def run(options: Options,
                                if pkg.name not in deferred_names]
         elif not shutdown_configured:
             pkgs_to_upgrade = calculate_upgradable_pkgs(cache, options)
+        # InstallOnShutdown keeps its existing reporting; only report
+        # updates that this run deferred on its own.
+        if not shutdown_configured and not options.dry_run:
+            pkgs_deferred = sorted(pkg.name for pkg in deferred)
 
     # do not touch the marker when the run is stopped, the result is unknown
     if not options.dry_run and not should_stop():
@@ -3143,6 +3158,9 @@ def run(options: Options,
         # A conffile conflict is not evidence that pending work is finished.
         if pending or not pkg_conffile_prompt:
             update_apply_on_shutdown_marker(rootdir, pending)
+    if pkgs_deferred:
+        logging.warning(_("Packages that will be installed at the next "
+                          "shutdown or reboot: %s"), " ".join(pkgs_deferred))
 
     # auto-removals
     kernel_pkgs_remove_success: bool = True
@@ -3190,7 +3208,8 @@ def run(options: Options,
             pkgs_removed=kernel_pkgs_removed,
             pkgs_kept_back=pkgs_kept_back,
             pkgs_kept_installed=kernel_pkgs_kept_installed,
-            update_stamp=True)
+            update_stamp=True,
+            pkgs_deferred=pkgs_deferred)
 
     # exit if there is nothing to do and nothing to report
     if (len(pending_autoremovals) == 0
@@ -3322,7 +3341,8 @@ def run(options: Options,
         pkgs_kept_back,
         kernel_pkgs_removed + pkgs_removed,
         kernel_pkgs_kept_installed + pkgs_kept_installed,
-        update_stamp=True)
+        update_stamp=True,
+        pkgs_deferred=pkgs_deferred)
 
 
 class Options:
