@@ -4,3 +4,4 @@ etc/logrotate.d
 etc/apt/apt.conf.d
 etc/kernel/postinst.d
 var/lib/unattended-upgrades
+usr/share/polkit-1

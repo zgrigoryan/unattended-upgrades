@@ -1,0 +1,22 @@
+# Control the installation of deferred updates at the next shutdown.
+#
+# Deferred updates are pending while the marker file
+# /var/run/unattended-upgrades-apply-on-shutdown exists; a desktop shutdown
+# dialog uses this interface to let the user skip installing them for the
+# current shutdown, and to undo that again, e.g. when the shutdown request
+# fails. Both methods are idempotent and authorized with polkit.
+interface com.ubuntu.UnattendedUpgrade.Deferred
+
+# Do not install the deferred updates during the next shutdown.
+# Succeeds without effect when no deferred updates are pending.
+method Skip() -> ()
+
+# Install skipped deferred updates during the next shutdown again.
+# Succeeds without effect when nothing was skipped.
+method Enable() -> ()
+
+# The caller is not allowed to do this, or polkit could not be asked.
+error NotAuthorized (reason: string)
+
+# The marker file could not be changed.
+error Failed (reason: string)

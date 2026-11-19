@@ -1,0 +1,12 @@
+[Unit]
+Description=Unattended Upgrades Deferred Installation Control Socket
+Documentation=man:unattended-upgrade(8)
+
+[Socket]
+ListenStream=/run/unattended-upgrades/com.ubuntu.UnattendedUpgrade.Deferred
+FileDescriptorName=varlink
+SocketMode=0666
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
