@@ -238,6 +238,52 @@ class TestShutdown(TestBase):
         close_fd.assert_called_once_with(5)
         log.assert_not_called()
 
+    def write_restore_files(self, record, status):
+        root = self.tempdir
+        record_file = os.path.join(
+            root, shutdown.DEFERRED_RECORD_FILE.lstrip("/"))
+        os.makedirs(os.path.dirname(record_file), exist_ok=True)
+        with open(record_file, "w") as f:
+            f.write(record)
+        status_file = os.path.join(root, "status")
+        with open(status_file, "w") as f:
+            f.write(status)
+        marker = os.path.join(root, shutdown.APPLY_ON_SHUTDOWN_FILE.lstrip("/"))
+        return record_file, status_file, marker
+
+    def test_boot_restores_marker_for_pending_work(self):
+        apt_pkg.init_system()
+        installed = ("Package: deferred-root\nStatus: install ok installed\n"
+                     "Architecture: all\nVersion: %s\n")
+        for status, restored in (
+                ("", True),                       # not installed at all
+                (installed % "1.0", True),         # still the old version
+                (installed % "2.0", False),        # installed as recorded
+                (installed % "3.0", False)):       # installed even newer
+            with self.subTest(status=status):
+                record_file, status_file, marker = self.write_restore_files(
+                    "deferred-root all 2.0\n", status)
+                if os.path.exists(marker):
+                    os.unlink(marker)
+                self.assertEqual(shutdown.restore_apply_on_shutdown_marker(
+                    self.tempdir, status_file), restored)
+                self.assertEqual(os.path.exists(marker), restored)
+                # A record whose work is done is stale and removed.
+                self.assertEqual(os.path.exists(record_file), restored)
+
+    def test_boot_restore_leaves_existing_marker_and_missing_record(self):
+        record_file, status_file, marker = self.write_restore_files(
+            "deferred-root all 2.0\n", "")
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+        self.assertFalse(shutdown.restore_apply_on_shutdown_marker(
+            self.tempdir, status_file))
+        os.unlink(marker)
+        os.unlink(record_file)
+        self.assertFalse(shutdown.restore_apply_on_shutdown_marker(
+            self.tempdir, status_file))
+        self.assertFalse(os.path.exists(marker))
+
 
 if __name__ == "__main__":
     unittest.main()
