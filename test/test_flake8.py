@@ -12,6 +12,7 @@ class TestFlake8Clean(unittest.TestCase):
             top_src_dir,
             os.path.join(top_src_dir, "unattended-upgrade"),
             os.path.join(top_src_dir, "unattended-upgrade-shutdown"),
+            os.path.join(top_src_dir, "unattended-upgrade-deferred-control"),
         ]
         subprocess.check_call(
             [

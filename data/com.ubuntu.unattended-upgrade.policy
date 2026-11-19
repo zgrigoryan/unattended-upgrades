@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <!-- Skipping has no forced expiry, so only administrators may do it. -->
+  <action id="com.ubuntu.UnattendedUpgrade.Deferred.Skip">
+    <description gettext-domain="unattended-upgrades">Skip installing deferred updates at shutdown</description>
+    <message gettext-domain="unattended-upgrades">To skip installing deferred updates at shutdown you need to authenticate.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+  <!-- Re-enabling only restores the default, installing the updates. -->
+  <action id="com.ubuntu.UnattendedUpgrade.Deferred.Enable">
+    <description gettext-domain="unattended-upgrades">Install deferred updates at shutdown</description>
+    <message gettext-domain="unattended-upgrades">To install deferred updates at shutdown you need to authenticate.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

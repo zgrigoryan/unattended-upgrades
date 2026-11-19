@@ -100,6 +100,8 @@ MAIL_BINARY = "/usr/bin/mail"
 SENDMAIL_BINARY = "/usr/sbin/sendmail"
 USERS = "/usr/bin/users"
 APPLY_ON_SHUTDOWN_FILE = "/var/run/unattended-upgrades-apply-on-shutdown"
+# Suffix used by unattended-upgrade-deferred-control for a skipped marker.
+SKIPPED_SUFFIX = ".skipped"
 
 
 DISTRO_CODENAME: str = ""
@@ -2693,6 +2695,12 @@ def update_apply_on_shutdown_marker(rootdir: str, pending: bool) -> None:
             os.unlink(filename)
         except FileNotFoundError:
             pass
+    # A fresh decision replaces any earlier skip, so a later Enable() of
+    # unattended-upgrade-deferred-control cannot restore stale pending work.
+    try:
+        os.unlink(filename + SKIPPED_SUFFIX)
+    except FileNotFoundError:
+        pass
 
 
 def recheck_deferred_upgrades(cache: UnattendedUpgradesCache,

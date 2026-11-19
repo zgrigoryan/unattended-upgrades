@@ -1,0 +1,7 @@
+[Unit]
+Description=Unattended Upgrades Deferred Installation Control
+Documentation=man:unattended-upgrade(8)
+Requires=unattended-upgrades-control.socket
+
+[Service]
+ExecStart=/usr/share/unattended-upgrades/unattended-upgrade-deferred-control

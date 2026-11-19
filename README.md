@@ -303,6 +303,21 @@ Supported Options Reference
  installed, and the final message reports whether they were installed or remain
  pending. Messages are also recorded in `unattended-upgrades-shutdown.log`.
 
+ A desktop shutdown dialog can let the user skip the deferred installation
+ for the current shutdown, and undo that again, for example when the
+ shutdown request fails, by calling `Skip()` and `Enable()` of the Varlink
+ interface `com.ubuntu.UnattendedUpgrade.Deferred` on
+ `/run/unattended-upgrades/com.ubuntu.UnattendedUpgrade.Deferred`. systemd
+ starts the service on demand (`unattended-upgrades-control.socket`), and it
+ checks each call with polkit: skipping requires administrator
+ authentication, re-enabling does not. A later regular run recreates the
+ marker if deferred work is still pending, and the marker is cleared at
+ reboot. With `InstallOnShutdown` enabled, the shutdown installation runs
+ regardless of a skip. For example:
+
+     varlinkctl call /run/unattended-upgrades/com.ubuntu.UnattendedUpgrade.Deferred \
+         com.ubuntu.UnattendedUpgrade.Deferred.Skip '{}'
+
 * `Unattended-Upgrade::MinBatteryLevel` - percentage or "ac-only" (default:"40")
  
  The average charge of the batteries, in percent, needed to upgrade

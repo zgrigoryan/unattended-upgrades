@@ -25,6 +25,11 @@ override_dh_auto_install:
 override_dh_builddeb:
 	dh_builddeb -- $(UU_BUILDDEB_ARGS)
 
+override_dh_installsystemd:
+	dh_installsystemd
+	# socket activated, so only the socket gets enabled and started
+	dh_installsystemd --name=unattended-upgrades-control
+
 override_dh_installinit:
 	# We do not want to run the init script in the postinst/prerm, its
 	# really only useful on shutdown, see Debian bug #645919.
